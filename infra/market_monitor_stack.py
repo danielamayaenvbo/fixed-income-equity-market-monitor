@@ -1,4 +1,4 @@
-from aws_cdk import Duration, Stack, aws_events, aws_events_targets, aws_iam, aws_lambda, aws_s3
+from aws_cdk import Duration, Stack, aws_ec2, aws_events, aws_events_targets, aws_lambda, aws_rds, aws_s3, aws_ssm
 from constructs import Construct
 
 
@@ -12,22 +12,39 @@ class MarketMonitorStack(Stack):
             block_public_access=aws_s3.BlockPublicAccess.BLOCK_ALL,
             auto_delete_objects=False,
         )
-        ingestion = aws_lambda.Function(
+        vpc = aws_ec2.Vpc(self, "MarketVpc", max_azs=2, nat_gateways=0)
+        database = aws_rds.DatabaseInstance(
+            self, "MarketDatabase", engine=aws_rds.DatabaseInstanceEngine.postgres(version=aws_rds.PostgresEngineVersion.VER_16),
+            vpc=vpc, instance_type=aws_ec2.InstanceType.of(aws_ec2.InstanceClass.T4G, aws_ec2.InstanceSize.MICRO),
+            allocated_storage=20, credentials=aws_rds.Credentials.from_generated_secret("market_monitor"),
+            publicly_accessible=False, backup_retention=Duration.days(1), deletion_protection=False,
+            vpc_subnets=aws_ec2.SubnetSelection(subnet_type=aws_ec2.SubnetType.PRIVATE_ISOLATED),
+        )
+        fred_key = aws_ssm.StringParameter.from_secure_string_parameter_attributes(
+            self, "FredApiKey", parameter_name="/market-monitor/fred-api-key"
+        )
+        finnhub_key = aws_ssm.StringParameter.from_secure_string_parameter_attributes(
+            self, "FinnhubApiKey", parameter_name="/market-monitor/finnhub-api-key"
+        )
+        ingestion = aws_lambda.DockerImageFunction(
             self,
             "DailyIngestion",
-            runtime=aws_lambda.Runtime.PYTHON_3_12,
-            handler="handler.main",
-            code=aws_lambda.Code.from_asset("../backend"),
+            code=aws_lambda.DockerImageCode.from_image_asset("../backend"),
             timeout=Duration.minutes(15),
-            environment={"RAW_DATA_BUCKET": raw_data.bucket_name},
+            vpc=vpc,
+            vpc_subnets=aws_ec2.SubnetSelection(subnet_type=aws_ec2.SubnetType.PRIVATE_ISOLATED),
+            environment={
+                "RAW_DATA_BUCKET": raw_data.bucket_name,
+                "DATABASE_SECRET_ARN": database.secret.secret_arn,
+                "FRED_PARAMETER_NAME": fred_key.parameter_name,
+                "FINNHUB_PARAMETER_NAME": finnhub_key.parameter_name,
+            },
         )
         raw_data.grant_put(ingestion)
-        ingestion.add_to_role_policy(
-            aws_iam.PolicyStatement(
-                actions=["ssm:GetParameter", "secretsmanager:GetSecretValue"],
-                resources=["*"],
-            )
-        )
+        database.secret.grant_read(ingestion)
+        fred_key.grant_read(ingestion)
+        finnhub_key.grant_read(ingestion)
+        database.connections.allow_default_port_from(ingestion)
         aws_events.Rule(
             self,
             "DailySchedule",

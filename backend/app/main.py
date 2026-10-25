@@ -154,6 +154,8 @@ def two_ten_spread(start: date, end: date, session: Session = Depends(get_sessio
         .where(
             ten_year.c.tenor == "10Y",
             two_year.c.tenor == "2Y",
+            ten_year.c.value.is_not(None),
+            two_year.c.value.is_not(None),
             ten_year.c.observation_date.between(start, end),
         )
         .order_by(ten_year.c.observation_date)

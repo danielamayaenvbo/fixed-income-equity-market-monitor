@@ -26,6 +26,7 @@ def _persist(
         instrument_id=instrument_id,
         observed_at=observed_at,
         details=json.dumps(details, sort_keys=True, default=str),
+        created_at=observed_at,
     )
     session.add(issue)
     return issue

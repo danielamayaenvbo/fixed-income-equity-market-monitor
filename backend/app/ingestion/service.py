@@ -24,8 +24,13 @@ from app.ingestion.repository import (
     upsert_equity_bars,
     upsert_yield_observations,
 )
+from app.ingestion.quality import (
+    check_nyse_expected_dates,
+    check_stale_feed,
+    check_zscore_outliers,
+)
 from app.ingestion.storage import RawArchive
-from app.models import Instrument
+from app.models import EquityBar, Instrument, YieldObservation
 
 LOGGER = get_logger(__name__)
 
@@ -79,11 +84,78 @@ class IngestionService:
         )
         return count
 
+    def run_quality_checks(self, *, kind: Literal["yield", "equity"], resource: str) -> None:
+        """Persist feed quality issues using date-over-date changes as outlier inputs."""
+        if not hasattr(self.session, "scalar"):
+            return
+
+        instrument = self.session.scalar(
+            select(Instrument).where(
+                Instrument.symbol == resource,
+                Instrument.asset_class == ("treasury_yield" if kind == "yield" else "equity_etf"),
+            )
+        )
+        instrument_id = instrument.id if instrument else None
+        if kind == "yield":
+            observations = self.session.scalars(
+                select(YieldObservation)
+                .where(YieldObservation.tenor == resource, YieldObservation.value.is_not(None))
+                .order_by(YieldObservation.observation_date)
+            ).all()
+            dates = [row.observation_date for row in observations]
+            timestamps_and_values = [
+                (
+                    datetime.combine(row.observation_date, datetime.min.time(), tzinfo=timezone.utc),
+                    float(row.value),
+                )
+                for row in observations
+            ]
+        else:
+            observations = self.session.scalars(
+                select(EquityBar)
+                .where(EquityBar.symbol == resource, EquityBar.interval == "1d")
+                .order_by(EquityBar.timestamp)
+            ).all()
+            dates = [row.timestamp.date() for row in observations]
+            timestamps_and_values = [(row.timestamp, float(row.close)) for row in observations]
+
+        now = datetime.now(timezone.utc)
+        check_nyse_expected_dates(
+            self.session,
+            instrument_id=instrument_id,
+            symbol=resource,
+            observed_dates=dates,
+            start=dates[0] if dates else now.date(),
+            end=now.date(),
+        )
+        check_stale_feed(
+            self.session,
+            instrument_id=instrument_id,
+            resource=resource,
+            latest_at=timestamps_and_values[-1][0] if timestamps_and_values else None,
+            as_of=now,
+        )
+        changes = [
+            (timestamp, value - previous_value)
+            for (_, previous_value), (timestamp, value) in zip(
+                timestamps_and_values, timestamps_and_values[1:]
+            )
+        ]
+        check_zscore_outliers(
+            self.session,
+            instrument_id=instrument_id,
+            resource=resource,
+            values=changes,
+        )
+        self.session.commit()
+
     def ingest_yields(
         self, provider: YieldProvider, *, series_id: str, tenor: str, start: date
     ) -> int:
         try:
-            return self.persist(provider.source, provider.fetch(series_id, tenor, start), "yield")
+            count = self.persist(provider.source, provider.fetch(series_id, tenor, start), "yield")
+            self.run_quality_checks(kind="yield", resource=tenor)
+            return count
         except Exception as error:
             self.record_failure(provider.source, series_id, error)
             raise
@@ -96,7 +168,9 @@ class IngestionService:
         start: date = YFINANCE_BACKFILL_START,
     ) -> int:
         try:
-            return self.persist(provider.source, provider.fetch(symbol, start), "equity")
+            count = self.persist(provider.source, provider.fetch(symbol, start), "equity")
+            self.run_quality_checks(kind="equity", resource=symbol)
+            return count
         except Exception as error:
             self.record_failure(provider.source, symbol, error)
             raise
