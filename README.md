@@ -122,7 +122,22 @@ asyncio.run(main())
 PY
 ```
 
-The yfinance historical-bars and NYSE-calendar checks are introduced in Phase 2. yfinance is an unofficial Yahoo Finance client and is intentionally isolated behind a provider interface before production use.
+## Phase 2: ingestion and data quality
+
+- `app.ingestion.FredClient` uses `FRED_API_KEY` from the process environment and retries
+  transient provider failures with exponential backoff. It preserves FRED `"."` values as SQL
+  `NULL`.
+- `YFinanceClient` is behind an equity-provider interface and requests daily history beginning
+  on **2015-01-01**. Both providers return normalized records without directly accessing the
+  database.
+- `IngestionService` archives unmodified provider payloads under `data/raw/<source>/`, logs
+  their digest in `raw_ingestion_log`, and uses PostgreSQL `ON CONFLICT DO UPDATE` upserts for
+  yield observations and equity bars.
+- `app.ingestion.quality` persists missing NYSE trading dates, stale feeds, and z-score
+  outliers in `data_quality_issues`. Callers provide the relevant instrument ID and observations
+  after each ingestion transaction.
+
+All provider tests use mocked HTTP/ticker inputs; no external provider call is made by `pytest`.
 
 ## Planned phases
 
