@@ -1,4 +1,5 @@
 from contextlib import asynccontextmanager
+import asyncio
 from datetime import date, datetime, timedelta, timezone
 import os
 
@@ -75,8 +76,17 @@ prices = ConnectionManager()
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
-    yield
-    engine.dispose()
+    stream_task = None
+    if os.getenv("FINNHUB_API_KEY"):
+        from app.streaming import stream_trades
+
+        stream_task = asyncio.create_task(stream_trades())
+    try:
+        yield
+    finally:
+        if stream_task:
+            stream_task.cancel()
+        engine.dispose()
 
 
 app = FastAPI(title="Fixed Income & Equity Market Monitor", lifespan=lifespan)
