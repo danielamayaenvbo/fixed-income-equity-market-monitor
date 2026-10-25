@@ -12,13 +12,13 @@ class MarketMonitorStack(Stack):
             block_public_access=aws_s3.BlockPublicAccess.BLOCK_ALL,
             auto_delete_objects=False,
         )
-        vpc = aws_ec2.Vpc(self, "MarketVpc", max_azs=2, nat_gateways=0)
+        vpc = aws_ec2.Vpc(self, "MarketVpc", max_azs=2, nat_gateways=1)
         database = aws_rds.DatabaseInstance(
             self, "MarketDatabase", engine=aws_rds.DatabaseInstanceEngine.postgres(version=aws_rds.PostgresEngineVersion.VER_16),
             vpc=vpc, instance_type=aws_ec2.InstanceType.of(aws_ec2.InstanceClass.T4G, aws_ec2.InstanceSize.MICRO),
             allocated_storage=20, credentials=aws_rds.Credentials.from_generated_secret("market_monitor"),
             publicly_accessible=False, backup_retention=Duration.days(1), deletion_protection=False,
-            vpc_subnets=aws_ec2.SubnetSelection(subnet_type=aws_ec2.SubnetType.PRIVATE_ISOLATED),
+            vpc_subnets=aws_ec2.SubnetSelection(subnet_type=aws_ec2.SubnetType.PRIVATE_WITH_EGRESS),
         )
         fred_key = aws_ssm.StringParameter.from_secure_string_parameter_attributes(
             self, "FredApiKey", parameter_name="/market-monitor/fred-api-key"
@@ -32,7 +32,7 @@ class MarketMonitorStack(Stack):
             code=aws_lambda.DockerImageCode.from_image_asset("../backend"),
             timeout=Duration.minutes(15),
             vpc=vpc,
-            vpc_subnets=aws_ec2.SubnetSelection(subnet_type=aws_ec2.SubnetType.PRIVATE_ISOLATED),
+            vpc_subnets=aws_ec2.SubnetSelection(subnet_type=aws_ec2.SubnetType.PRIVATE_WITH_EGRESS),
             environment={
                 "RAW_DATA_BUCKET": raw_data.bucket_name,
                 "DATABASE_SECRET_ARN": database.secret.secret_arn,

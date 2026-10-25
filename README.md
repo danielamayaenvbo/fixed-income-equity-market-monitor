@@ -175,7 +175,7 @@ DATABASE_URL='postgresql+psycopg://...' alembic -c ../backend/alembic.ini upgrad
 cdk destroy
 ```
 
-RDS, NAT networking (if added for private Lambda egress), and retained S3 data can incur charges. Destroy the stack and empty retained data after demos; keep the stack within a personal budget alert.
+RDS, the NAT gateway required for private-Lambda provider egress, and retained S3 data can incur charges. Destroy the stack and empty retained data after demos; keep the stack within a personal budget alert.
 
 ```mermaid
 flowchart LR
